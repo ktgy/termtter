@@ -1,11 +1,50 @@
 # -*- coding: utf-8 -*-
 require 'singleton'
 
+config.plugins.command_line.
+  set_default(:shortcut_setting,
+              { ':' => '',
+                'd' => 'direct',
+                'D' => 'delete',
+                'f' => 'fib',
+                'F' => 'favorite',
+                'l' => 'list',
+                'o' => 'open',
+                'p' => 'profile',
+                'R' => 'reply',
+                's' => 'search',
+                't' => 'retweet',
+                'u' => 'update',
+                'c' => lambda do
+                  system('clear')
+                end,
+                'L' => lambda do
+                  puts '-' *
+                    `stty size`.chomp.
+                    sub(/^\d+\s(\d+)$/, '\\1').to_i
+                end,
+                'q' => lambda do
+                  Termtter::Client.call_commands('quit')
+                end,
+                'r' => lambda do
+                  Termtter::Client.call_commands('replies')
+                end,
+                '?' => lambda do
+                  Termtter::Client.call_commands('help')
+                end,
+                "\e" => lambda do
+                  system('screen', '-X', 'eval', 'copy')
+                end
+              })
+
 module Termtter
   class CommandLine
     include Singleton
 
+    STTY_ORIGIN = `stty -g`.chomp
+
     class << self
+
       def start
         instance.start
       end
@@ -48,16 +87,46 @@ module Termtter
       setup_readline()
       trap_setting()
       @input_thread = Thread.new do
-        while buf = Readline.readline(ERB.new(prompt).result(Termtter::API.twitter.__send__(:binding)), true)
-          Readline::HISTORY.pop if buf.empty?
+        loop do
           begin
-            call(buf)
-          rescue Exception => e
-            Client.handle_error(e)
+            value = config.plugins.command_line.shortcut_setting[wait_keypress]
+            Client.pause
+            case value
+            when String
+              call_prompt(value)
+            when Proc
+              value.call
+            end
+          ensure
+            Client.resume
           end
         end
       end
       @input_thread.join
+    end
+
+    def call_prompt(command)
+      Client.call_commands("curry #{command}")
+      if buf = Readline.readline(ERB.new(prompt).result(Termtter::API.twitter.__send__(:binding)), true)
+        Readline::HISTORY.pop if buf.empty?
+        begin
+          call(buf)
+        rescue Exception => e
+          Client.handle_error(e)
+        end
+      else
+        puts
+      end
+    ensure
+      Client.call_commands('uncurry')
+    end
+
+    def wait_keypress
+      system('stty', '-echo', '-icanon')
+      c = STDIN.getc
+      return [c].pack('c')
+    ensure
+      system('stty', STTY_ORIGIN)
     end
 
     def setup_readline
@@ -88,16 +157,12 @@ module Termtter
 
     def trap_setting()
       begin
-        stty_save = `stty -g`.chomp
         trap("INT") do
           begin
-            system "stty", stty_save
+            system "stty", STTY_ORIGIN
           ensure
             Client.call_commands('exit')
           end
-        end
-        trap("CONT") do
-          Readline.refresh_line
         end
       rescue ArgumentError
       rescue Errno::ENOENT
